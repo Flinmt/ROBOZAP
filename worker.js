@@ -8,7 +8,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.get('/', (req, res) => {
-    res.send('O Robô do WhatsApp está rodando e operante! 🤖 (Modo: Apenas Agenda Inicio)');
+    res.send('O Robô do WhatsApp está rodando e operante! 🤖 (Template: confirma_nova)');
 });
 
 app.listen(PORT, () => {
@@ -36,8 +36,10 @@ const INTERVALO_CHECK = 10000;
 
 // Função auxiliar para limpar texto e evitar erro 400 (vazio)
 function limparTexto(texto) {
-    if (!texto) return "-"; 
+    if (texto === null || texto === undefined) return "-"; 
+    // Remove quebras de linha e aspas que podem quebrar o JSON
     const textoLimpo = String(texto).replace(/[\r\n"]/g, " ").trim();
+    // Meta rejeita strings vazias, então enviamos um traço ou espaço
     return textoLimpo === "" ? "-" : textoLimpo;
 }
 
@@ -46,7 +48,7 @@ async function processarFila() {
     try {
         pool = await sql.connect(dbConfig);
 
-        // ALTERAÇÃO 1: Filtro SQL ajustado APENAS para 'agendainicio'
+        // Filtro ajustado APENAS para 'agendainicio'
         const querySelect = `
             SELECT top 20
                 '55' + w.strTelefone as strtelefone,
@@ -62,7 +64,7 @@ async function processarFila() {
             from tblWhatsAppEnvio W
             inner join vwAgenda a on a.intAgendaId=w.intAgendaId
             where IsNull(bolEnviado,'N') <> 'S' 
-            and strTipo = 'agendainicio' -- <--- FILTRO RESTRITO AQUI
+            and strTipo = 'agendainicio' 
             and len(W.strTelefone)>=10 
             AND CONVERT(DATE, datWhatsAppEnvio) = CONVERT(DATE, GETDATE())
             order by datWhatsAppEnvio
@@ -76,42 +78,51 @@ async function processarFila() {
             
             for (const msg of listaEnvio) {
                 try {
+                    // Limpeza de variáveis
                     const p_agenda = limparTexto(msg.strAgenda);
                     const p_data = limparTexto(msg.datagenda);
                     const p_hora = limparTexto(msg.strHora);
                     const p_profissional = limparTexto(msg.strProfissional);
                     const p_unidade = limparTexto(msg.strunidade);
                     
-                    // ALTERAÇÃO 2: Código simplificado apenas para 'primeira_consulta_exame'
-                    const templateName = "primeira_consulta_exame";
+                    // Limpeza do telefone (garante apenas números)
+                    const telefoneFinal = String(msg.strtelefone).replace(/\D/g, "");
+
+                    // --- AJUSTE CRÍTICO: Usando o template que funcionou no seu CURL ---
+                    const templateName = "confirma_nova";
+                    
+                    const parameters = [
+                        { type: "text", text: p_agenda },       // {{1}}
+                        { type: "text", text: p_data },         // {{2}}
+                        { type: "text", text: p_hora },         // {{3}}
+                        { type: "text", text: p_profissional }, // {{4}}
+                        { type: "text", text: p_unidade }       // {{5}}
+                    ];
+
                     const components = [{
                         type: "body",
-                        parameters: [
-                            { type: "text", text: p_agenda },
-                            { type: "text", text: p_data },
-                            { type: "text", text: p_hora },
-                            { type: "text", text: p_profissional },
-                            { type: "text", text: p_unidade }
-                        ]
+                        parameters: parameters
                     }];
 
                     const payload = {
-                        number: msg.strtelefone,
+                        number: telefoneFinal,
                         isClosed: false, 
                         templateData: {
                             messaging_product: "whatsapp",
-                            to: msg.strtelefone,
+                            to: telefoneFinal,
                             type: "template",
                             template: { name: templateName, language: { code: "pt_BR" }, components: components }
                         }
                     };
 
-                    console.log(`📤 Enviando ID ${msg.intWhatsAppEnvioId} (${templateName})...`);
+                    console.log(`📤 Enviando ID ${msg.intWhatsAppEnvioId} para ${telefoneFinal}...`);
+                    console.log(`   Template: ${templateName}`);
                     
                     await axios.post(PARTNERBOT_URL, payload, {
                         headers: { 'Content-Type': 'application/json', 'Authorization': AUTH_TOKEN }
                     });
 
+                    // Sucesso: Atualiza banco
                     await pool.request()
                         .input('id', sql.Int, msg.intWhatsAppEnvioId)
                         .query(`UPDATE tblWhatsAppEnvio SET bolEnviado = 'S', datEnvioReal = GETDATE() WHERE intWhatsAppEnvioId = @id`);
@@ -120,8 +131,14 @@ async function processarFila() {
 
                 } catch (errEnvio) {
                     let errorMsg = errEnvio.message;
+                    // Tenta ler o erro detalhado que vem da Meta/PartnerBot
                     if (errEnvio.response && errEnvio.response.data) {
-                        errorMsg = JSON.stringify(errEnvio.response.data);
+                        try {
+                            const dataStr = JSON.stringify(errEnvio.response.data);
+                            errorMsg = dataStr; 
+                        } catch (e) {
+                            errorMsg = "Erro desconhecido na resposta da API";
+                        }
                     }
                     console.error(`❌ Erro ID ${msg.intWhatsAppEnvioId}:`, errorMsg);
                 }
@@ -135,4 +152,4 @@ async function processarFila() {
 }
 
 setInterval(processarFila, INTERVALO_CHECK);
-console.log("🚀 Sistema iniciado (Filtro: Apenas AGENDAINICIO).");
+console.log("🚀 Sistema iniciado (Template Corrigido: confirma_nova).");
